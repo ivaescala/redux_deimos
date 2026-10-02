@@ -1,0 +1,12 @@
+# User parameter block appended to every M32 .pypeit file (pypeit_setup -p).
+# Matches the two overrides Geha et al. (2026) apply in dmost's setup script;
+# everything else stays at the PypeIt keck_deimos defaults (mosaic MSC01-04,
+# full_template wavecal, overscan-only bias, slitmask assignment, forced extraction).
+[calibrations]
+    [[wavelengths]]
+        refframe = observed          # no heliocentric correction; apply after velocity fitting
+[flexure]
+    spec_method = skip               # sky-line flexure done downstream (linear in wavelength)
+[reduce]
+    [[slitmask]]
+        missing_objs_fwhm = 0.8      # arcsec; set to the measured seeing of this mask
