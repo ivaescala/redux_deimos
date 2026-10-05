@@ -94,12 +94,12 @@ def main():
     p.add_argument("masks", nargs="+", help="mask folder(s) relative to $DEIMOS_RAW, e.g. 2022B/M32RA1")
     p.add_argument("--stages", nargs="+", default=["calib", "science", "qa", "collate"],
                    choices=STAGES, help="stages to run, in pipeline order (default: all but setup)")
-    p.add_argument("--partition", default=None)
+    p.add_argument("--partition", default='batch')
     p.add_argument("--account", default=None)
-    p.add_argument("--mail", default=None, help="address for END/FAIL e-mails")
+    p.add_argument("--mail", default="ivanna.escala@uc.cl", help="address for END/FAIL e-mails")
     p.add_argument("--env", default="pypeit",
                    help="conda environment the job activates (default: pypeit)")
-    p.add_argument("--cpus", type=int, default=2)
+    p.add_argument("--cpus", type=int, default=1)
     p.add_argument("--mem", default="32G")
     p.add_argument("--time", default="24:00:00", help="wall time, HH:MM:SS or D-HH:MM:SS")
     p.add_argument("--force", action="store_true", help="allow 'setup' to overwrite existing .pypeit files")
@@ -187,7 +187,7 @@ conda activate {env}
 echo "job $SLURM_JOB_ID on $(hostname) | $(python -c 'import pypeit; print("PypeIt", pypeit.__version__)')"
 for stage in {' '.join(stages)}; do
   echo "===== $stage started $(date '+%F %T')"
-  reduce_mask.sh {mask} "$stage"
+  bash reduce_mask.sh {mask} "$stage"
   echo "===== $stage finished $(date '+%F %T')"
 done
 """

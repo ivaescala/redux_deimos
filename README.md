@@ -229,11 +229,11 @@ repeated.
 
 ```bash
 conda activate pypeit
-reduce_mask.sh 2022B/M32RA1 setup
-reduce_mask.sh 2022B/M32RA1 calib
-reduce_mask.sh 2022B/M32RA1 science
-reduce_mask.sh 2022B/M32RA1 qa
-reduce_mask.sh 2022B/M32RA1 collate
+bash reduce_mask.sh 2022B/M32RA1 setup
+bash reduce_mask.sh 2022B/M32RA1 calib
+bash reduce_mask.sh 2022B/M32RA1 science
+bash reduce_mask.sh 2022B/M32RA1 qa
+bash reduce_mask.sh 2022B/M32RA1 collate
 ```
 
 ### 5c. Cluster: interactive sessions
@@ -244,7 +244,7 @@ inspecting files:
 ```bash
 srun --cpus-per-task=2 --mem=16G --time=02:00:00 --pty bash -l
 conda activate pypeit
-reduce_mask.sh 2022B/M32RA1 setup
+bash reduce_mask.sh 2022B/M32RA1 setup
 ```
 
 ### 5d. Cluster: batch jobs
@@ -256,14 +256,14 @@ the session: user, `DEIMOS_RAW`/`DEIMOS_RDX`, the conda installation, the defaul
 partition (`sinfo`), your account (`sacctmgr`) and e-mail (`git config`).
 
 ```bash
-make_slurm.py 2022B/M32RA1                                  # write only; inspect the script
-make_slurm.py 2022B/M32RA1 --stages calib --submit          # write and submit
-make_slurm.py 2022B/M32RA1 2022B/M32RA2 --stages science qa collate --submit
+python make_slurm.py 2022B/M32RA1                                  # write only; inspect the script
+python make_slurm.py 2022B/M32RA1 --stages calib --submit          # write and submit
+python make_slurm.py 2022B/M32RA1 2022B/M32RA2 --stages science qa collate --submit
 ```
 
-Defaults: environment `pypeit`, stages `calib science qa collate`, 2 CPUs, 32 GB,
+Defaults: environment `pypeit`, stages `calib science qa collate`, 1 CPU, 32 GB,
 24 h. Override with `--env`, `--stages`, `--cpus`, `--mem`, `--time`,
-`--partition`, `--account`, and `--mail`. `setup` only
+`--partition`,  `--account`, and `--mail`. `setup` only
 runs when requested, and is refused for masks that already have a `.pypeit`
 file unless you add `--force`. Scripts and logs go to
 `$DEIMOS_RDX/<semester>/<mask>/slurm/`.
@@ -271,9 +271,9 @@ file unless you add `--force`. Scripts and logs go to
 Recommended sequence per mask, so the calibrations are checked before the
 science stage:
 
-1. `reduce_mask.sh <semester>/<mask> setup` in an interactive session (minutes), and check the data block.
-2. `make_slurm.py <semester>/<mask> --stages calib --submit`, then review `wavecal_qa.py`'s output in the job log.
-3. `make_slurm.py <semester>/<mask> --stages science qa collate --submit`.
+1. `bash reduce_mask.sh <semester>/<mask> setup` in an interactive session (minutes), and check the data block.
+2. `python make_slurm.py <semester>/<mask> --stages calib --submit`, then review `wavecal_qa.py`'s output in the job log.
+3. `python make_slurm.py <semester>/<mask> --stages science qa collate --submit`.
 
 ---
 
