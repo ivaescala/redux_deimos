@@ -52,7 +52,7 @@ configs() {
 case "$STAGE" in
   setup)
     pypeit_setup -s keck_deimos -r "$RAWDIR" -d "$OUT"
-    cat "$OUT"/setup_files/keck_deimos_*.sorted
+    cat "$OUT"/setup_files/keck_deimos*.sorted
     pypeit_setup -s keck_deimos -r "$RAWDIR" -d "$OUT" -c all -p "$PAR"
     for CFG in $(configs); do
       PF=$CFG/$(basename "$CFG").pypeit
@@ -79,7 +79,10 @@ case "$STAGE" in
     ;;
   qa)
     for CFG in $(configs); do
-      pypeit_parse_slits "$CFG"/Science/spec2d_*.fits > "$CFG/slit_report.txt" || true
+      for f in "$CFG"/Science/spec2d_*.fits; do
+        echo "### $(basename "$f")"
+        pypeit_parse_slits "$f"
+      done > "$CFG/slit_report.txt"
       python "$KIT/skysub_qa.py" "$CFG"/Science/spec2d_*.fits --out "$CFG/skysub_qa.csv"
     done
     ;;
