@@ -16,11 +16,12 @@ a laptop or on a SLURM cluster.
 | `deimos.par` | PypeIt parameter block appended to every `.pypeit` file |
 | `assign_calib_by_night.py` | One calibration group per UT night; flags nights with incomplete calibrations |
 | `wavecal_qa.py` | Rule-based check of every slit's wavelength solution |
+| `wavecal_exclude.py` | Writes `none` rows to the selection table for slits that fail `wavecal_qa.py`, one per science exposure (run by the `collate` stage) |
 | `skysub_qa.py` | Object-free sky-residual statistics and a Ca II triplet leakage test vs. distance from M32 |
 | `make_slurm.py` | Write (and optionally submit) a SLURM job that runs `reduce_mask.sh` stages |
 | `inspect_slits.py` | Spatial profiles and Ca II triplet spectra of chosen slits from existing spec2d files, including slits PypeIt rejected (section 7) |
 | `check_recovered.py` | Per-exposure extraction and sky-line residual checks of target spectra in spec1d files (section 7) |
-| `merge_spec1d.py` | Build one spec1d per exposure from two reductions according to a selection table, removing duplicate objects (section 7) |
+| `merge_spec1d.py` | Build one spec1d per exposure from the main and test reductions according to the selection table, dropping excluded slits and duplicate objects (run by the `collate` stage) |
 
 ---
 
@@ -116,8 +117,8 @@ $DEIMOS_ROOT/
 │           │   ├── skysub_qa.csv
 │           │   ├── slit_report.txt    slit flags per exposure (qa stage)
 │           │   ├── inspect_slits/     PNGs from inspect_slits.py (section 7)
-│           │   ├── selection.csv      per slit-exposure source: main, test or none (section 7)
-│           │   └── Science_merged/    merged spec1d files, input to collate (section 7)
+│           │   ├── selection.csv      per slit-exposure source: main, test or none (collate stage, section 7)
+│           │   └── Science_merged/    merged spec1d files, input to collate
 │           └── test_maskfrac/         re-reduction of rejected slits (section 7)
 │               ├── keck_deimos_A.pypeit
 │               ├── Calibrations -> ../keck_deimos_A/Calibrations
@@ -230,7 +231,7 @@ the output between them.
 | `calib` | Calibrations only; writes `wavecalib_report.txt` and `wavecal_qa.csv` | Slit edges; slits failing the wavelength checks (section 6) |
 | `science` | Full reduction, reusing the calibrations | `Science/spec2d_*.fits` and `spec1d_*.fits`: one of each per exposure, each holding every slit on all four mosaics |
 | `qa` | `skysub_qa.csv` and `slit_report.txt` (slit flags per exposure) | Sky residuals vs. radius (section 6); slits flagged `BADSKYSUB` (section 7) |
-| `collate` | Coadds 1D spectra across exposures (0.5″ matching, slits with wavelength RMS > 0.4 pix excluded) | `collate1d/`. If slits were recovered (section 7), collate `Science_merged/` instead |
+| `collate` | Adds `none` rows to `selection.csv` for slits failing `wavecal_qa.py`, merges the main and any test reduction into `Science_merged/`, and coadds 1D spectra across exposures (0.5″ matching, slits with wavelength RMS > 0.4 pix excluded) | `collate1d/`; the excluded and merged object counts printed per exposure |
 
 Re-running `setup` overwrites the `.pypeit` file. After an interruption, re-run
 the same stage: finished calibrations are reused, so only the step in progress is
@@ -285,7 +286,7 @@ science stage:
 1. `bash reduce_mask.sh <semester>/<mask> setup` in an interactive session (minutes), and check the data block.
 2. `python make_slurm.py <semester>/<mask> --stages calib --submit`, then review `wavecal_qa.py`'s output in the job log.
 3. `python make_slurm.py <semester>/<mask> --stages science qa --submit`, then check `slit_report.txt` for slits rejected for sky subtraction (section 7).
-4. `python make_slurm.py <semester>/<mask> --stages collate --submit` if no slits need recovering; otherwise follow section 7 and collate the merged files.
+4. If slits need recovering, follow section 7 up to writing the selection table. Then `python make_slurm.py <semester>/<mask> --stages collate --submit`. Slits failing `wavecal_qa.py` are excluded in either case.
 
 ---
 
@@ -308,11 +309,19 @@ rsync -av <user>@<cluster>:<redux path>/<semester>/<mask>/keck_deimos_A/Calibrat
 blue to red, its dispersion differs by more than 5% from the detector median
 (≈0.32 Å/pix for 1200G), it uses fewer than 20 arc lines, the lines span less
 than 60% (or more than 100%) of the spectrum, its RMS exceeds 0.4 pix, or PypeIt
-flagged it. The RMS cut alone misses solutions locked onto the wrong lines with a
-small RMS. Alignment boxes appear as `box`. Keep bad slits in the reduction and
-exclude them downstream by `maskdef_id` (`wavecal_qa.csv`), for example as
-`none` rows in the selection table of section 7. PypeIt does not flag most of
-these slits itself, and collate's RMS cut misses a wrong solution with a small RMS.
+flagged it. Slits with no solution at all are `fail`; alignment boxes appear as
+`box`.
+
+PypeIt itself excludes few of these slits. With DEIMOS's default method, it flags
+a slit as `BADWVCALIB`, and skips it in the science stage, only when no fit exists. A fit above its RMS threshold (0.15 × arc FWHM) is logged as poor
+but kept, so the slit is extracted with that solution. Collate's RMS cut then
+drops those above 0.4 pix but misses solutions locked onto the wrong lines with a
+small RMS. Bad slits therefore stay in the reduction and are excluded at the
+`collate` stage: `wavecal_exclude.py` writes a `none` row to `selection.csv` for
+every `bad` or `fail` slit and every science exposure of its calibration group,
+and `merge_spec1d.py` drops those slits' objects (the target and any serendipitous
+detections) before coadding. Only `Science_merged/` and `collate1d/` are
+filtered; `Science/` still holds every extracted slit.
 
 **Sky subtraction.** `skysub_qa.py` computes the residual
 (science − sky − object model)/noise on object-free pixels of every slit, binned
@@ -460,7 +469,7 @@ that does not come from the main reduction:
 ```
 maskdef_id,exp,source,reason
 <maskdef_id>,<exp>,test,recovered with max_mask_frac=0.97
-<maskdef_id>,<exp>,none,wrong wavelength solution (wavecal_qa)
+<maskdef_id>,<exp>,none,trace on a neighbour
 ```
 
 `exp` is the exposure number in the file names (the field after the date in
@@ -469,22 +478,22 @@ slit-exposures default to `main`. The rules:
 
 - **One reduction per slit.** All exposures of a slit come from the same
   reduction.
-- **Excluded slit-exposures:** wrong wavelength solutions, failed extractions,
-  `sky_k` outside the reference range (main and test spectra alike), traces on a
-  neighbour, and blends.
+- **Excluded slit-exposures:** failed extractions, `sky_k` outside the reference
+  range (main and test spectra alike), traces on a neighbour, and blends.
+
+Slits with wrong wavelength solutions need no rows here: the `collate` stage adds
+them (reason starting with `wavecal_qa:`).
 
 **6. Merge and collate.**
 
 ```bash
-python $KIT/merge_spec1d.py --main $CFG/Science --test $TEST/Science \
-    --select $CFG/selection.csv --out $CFG/Science_merged
-
-pypeit_collate_1d --spec1d_files $CFG/Science_merged/spec1d_*.fits \
-    --tolerance 0.5 --wv_rms_thresh 0.4 --outdir $CFG/collate1d
+bash $KIT/reduce_mask.sh 2022B/M32RA1 collate
 ```
 
-`merge_spec1d.py` prints, per exposure, the objects taken from each reduction,
-the objects dropped and the duplicates removed.
+This runs `wavecal_exclude.py`, then `merge_spec1d.py` with `$TEST/Science` as the
+test reduction, then `pypeit_collate_1d` on `Science_merged/`. `merge_spec1d.py`
+prints, per exposure, the objects taken from each reduction, the objects dropped
+and the duplicates removed.
 
 ### 7d. Caveat
 

@@ -7,12 +7,12 @@
 #   calib    calibrations only + rule-based wavelength-solution check (wavecal_qa.csv)
 #   science  full reduction (reuses calibrations)
 #   qa       slit report + sky-residual statistics vs. distance from M32
-#   collate  coadd 1D spectra across exposures
+#   collate  exclude slits failing wavecal_qa, merge with any recovered slits, coadd 1D spectra
 #
 # Every path is absolute, so the script can be run from any folder.
 # Requires: DEIMOS_RAW (koa_deimos_fetch.py --outdir) and DEIMOS_RDX (or DEIMOS_REDUX).
 # The kit files (this script, deimos.par, assign_calib_by_night.py, skysub_qa.py,
-# wavecal_qa.py)
+# wavecal_qa.py, wavecal_exclude.py, merge_spec1d.py)
 # must sit in the same folder. Re-running "setup" overwrites the .pypeit file(s).
 set -euo pipefail
 
@@ -29,7 +29,8 @@ RDX=${DEIMOS_RDX:-${DEIMOS_REDUX:-}}
 
 KIT=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 PAR=${DEIMOS_PAR:-$KIT/deimos.par}
-for f in "$PAR" "$KIT/assign_calib_by_night.py" "$KIT/skysub_qa.py" "$KIT/wavecal_qa.py"; do
+for f in "$PAR" "$KIT/assign_calib_by_night.py" "$KIT/skysub_qa.py" "$KIT/wavecal_qa.py" \
+         "$KIT/wavecal_exclude.py" "$KIT/merge_spec1d.py"; do
   [ -f "$f" ] || { echo "reduce_mask.sh: missing $f" >&2; exit 1; }
 done
 
@@ -88,7 +89,12 @@ case "$STAGE" in
     ;;
   collate)
     for CFG in $(configs); do
-      pypeit_collate_1d --spec1d_files "$CFG"/Science/spec1d_*.fits \
+      # PypeIt extracts slits whose wavelength fit is wrong but exists; drop them by maskdef_id
+      python "$KIT/wavecal_exclude.py" "$CFG"     # -> none rows in $CFG/selection.csv
+      # always merge, so the exclusions apply whether or not slits were recovered (section 7)
+      python "$KIT/merge_spec1d.py" --main "$CFG/Science" --test "$OUT/test_maskfrac/Science" \
+          --select "$CFG/selection.csv" --out "$CFG/Science_merged"
+      pypeit_collate_1d --spec1d_files "$CFG"/Science_merged/spec1d_*.fits \
           --tolerance 0.5 --wv_rms_thresh 0.4 --outdir "$CFG/collate1d"
     done
     ;;
