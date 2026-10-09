@@ -25,6 +25,7 @@ a laptop or on a SLURM cluster.
 | `merge_spec1d.py` | Build one spec1d per exposure from the main and test reductions according to the selection table, dropping excluded slits and duplicate objects (run by the `collate` stage) |
 | `patch_dmost.py` | One-time fixes to a dmost clone for PypeIt 2.0.1 / numpy ≥ 2.4 and this reduction's collate settings (section 9) |
 | `dmost_prep.py` | Build dmost's working folder from the `collate` outputs and check its inputs (run by the `marz` and `dmost` stages) |
+| `make_dmost_data.py` | Build the stellar templates, telluric grids and sky-line list dmost reads (section 9b) |
 
 ---
 
@@ -123,7 +124,7 @@ $DEIMOS_ROOT/
 │       │   │   ├── skysub_qa.csv
 │       │   │   ├── slit_report.txt    slit flags per exposure (qa stage)
 │       │   │   ├── inspect_slits/     PNGs from inspect_slits.py (section 7)
-│       │   │   ├── selection.csv      test or none per exposure of slits inspected in section 7; wavecal exclusions added by collate
+│       │   │   ├── selection.csv      per slit-exposure source: main, test or none (collate stage, section 7)
 │       │   │   └── Science_merged/    merged spec1d files, input to collate
 │       │   └── test_maskfrac/         re-reduction of rejected slits (section 7)
 │       │       ├── keck_deimos_A.pypeit
@@ -402,15 +403,6 @@ For each slit it prints and plots:
 - `n_off`, `n/t`: offset and relative height of the brightest other source
 - `t_frac`: fraction of the slit's light within ±1 FWHM of the target
 
-`check_recovered.py` prints, for each target and exposure, the optimal-extraction
-FWHM, the median optimal and boxcar counts in 8400–8800 Å and their ratio, and two
-measures of sky-line residuals in the target spectrum:
-
-- `sky_r`: correlation between the continuum-subtracted target and sky spectra,
-  showing whether residuals follow the sky-line pattern.
-- `sky_k`: fraction of the sky-line flux left in the target spectrum (negative =
-  over-subtracted, positive = under-subtracted, near 0 = well subtracted).
-
 `check_recovered.py`, run without `--maskdef` on the main reduction, prints the
 distribution of every quantity over all targets. Those percentiles are the
 reference for judging recovered spectra. A recovered slit-exposure is accepted
@@ -437,9 +429,8 @@ KIT=$DEIMOS_ROOT/pypeit
 ```
 
 **1. Identify rejected slits.** After the `qa` stage, list slits flagged
-`BADSKYSUB` in `slit_report.txt` in at least one exposure, leave out those that
-fail `wavecal_qa.py` (they are excluded at `collate` regardless), and note the
-remaining `maskdef_id`s.
+`BADSKYSUB` in `slit_report.txt` that have a wavelength solution, and note their
+`maskdef_id`s.
 
 **2. Inspect them in the existing reduction.**
 
@@ -492,37 +483,23 @@ python $KIT/check_recovered.py $CFG/Science/spec1d_*.fits  > $CFG/check_main.txt
 
 Apply the acceptance criteria of section 7b to each recovered slit-exposure.
 
-**5. Write the selection table** `$CFG/selection.csv`. It decides, for the
-slits inspected in step 2 only, which of their exposures reach `collate`:
+**5. Write the selection table** `$CFG/selection.csv`, one row per slit-exposure
+that does not come from the main reduction:
 
 ```
 maskdef_id,exp,source,reason
 <maskdef_id>,<exp>,test,recovered with max_mask_frac=0.97
-<maskdef_id>,<exp>,none,test sky_k -0.57
-<maskdef_id>,<exp>,none,not recovered by the test run (BADSKYSUB at max_mask_frac=0.97)
+<maskdef_id>,<exp>,none,trace on a neighbour
 ```
 
 `exp` is the exposure number in the file names (the field after the date in
-`DE.<date>.<exp>.<n>`); `source` is `main`, `test` or `none`, and the reason
-column is free text that `merge_spec1d.py` ignores. The rules:
+`DE.<date>.<exp>.<n>`); `source` is `main`, `test` or `none`; unlisted
+slit-exposures default to `main`. The rules:
 
-- **Only slits inspected in step 2 get rows.** Every other slit keeps its
-  main-run spectra unchanged and needs no row: unlisted slit-exposures default to
-  `main`.
-- **Slits judged in step 2 not worth re-reducing are `none` in every exposure**,
-  including exposures the main run extracted. They take no spectra from either
-  run.
-- **Every exposure of a test-reduction slit gets a row**, with source `test` or
-  `none`, never `main`, even for exposures the main run did extract. All of a
-  slit's spectra then come from one processing.
-- **`test`** when the recovered slit-exposure passes every acceptance criterion
-  of section 7b.
-- **`none`** when it fails any of them (failed extraction, `sky_k` outside the
-  reference range, trace on a neighbour, inconsistent flux between exposures),
-  when the test run did not extract it, or when the test extraction is a blend
-  (FWHM two or more times a single star's).
-- **No minimum number of exposures.** A slit with one or two accepted exposures
-  is kept.
+- **One reduction per slit.** All exposures of a slit come from the same
+  reduction.
+- **Excluded slit-exposures:** failed extractions, `sky_k` outside the reference
+  range (main and test spectra alike), traces on a neighbour, and blends.
 
 Slits with wrong wavelength solutions need no rows here: the `collate` stage adds
 them (reason starting with `wavecal_qa:`).
@@ -545,9 +522,8 @@ PypeIt fits no slitmask offset (`MaskOFF` 0.00 in `slit_report.txt`). Targets ar
 still matched to their design entries, but serendipitous objects get coordinates
 shifted by the offset the main reduction applied. Object finding can also
 differ: a slit-exposure that extracted normally in the main run can fail in the
-subset run. Run the relaxed `max_mask_frac` only on the rejected slits (via
-`slitspatnum`), never on the whole mask, so that slits extracted normally in the
-main run are not put at risk.
+subset run. Take every slit-exposure the main reduction already extracted from
+the main reduction.
 
 ---
 
@@ -631,10 +607,47 @@ dmost_data/
 └── Other_data/sky_single_mg.dat       sky emission lines for the flexure fit
 ```
 
-The notebooks in `dmost/notebooks/` show how the template grids were built
-(PHOENIX spectra from Husser et al. 2013; telluric spectra with TelFit, which
-needs LBLRTM). The sky-line list has no source in the repository. Ask the dmost
-authors for these folders. The `dmost` stage lists whatever is missing and stops.
+`make_dmost_data.py` builds them, following dmost's notebooks
+`prepare_pheonix_templates.ipynb` and `mk_telluric_grid.ipynb`. It is
+recommended to build the templates in a cluster environment.
+
+**Sky lines and stellar templates**, in the PypeIt environment:
+
+```bash
+conda activate pypeit
+pip install ppxf
+python $DEIMOS_ROOT/pypeit/make_dmost_data.py skylines
+python $DEIMOS_ROOT/pypeit/make_dmost_data.py phoenix-download     # login node, ~1.4 GB
+python $DEIMOS_ROOT/pypeit/make_dmost_data.py phoenix-prepare
+```
+
+`skylines` copies the sky-line list that ships with PypeIt, whose DEIMOS flexure
+code reads the same file. `phoenix-download` fetches the 216 PHOENIX spectra the
+three grids use (Husser et al. 2013) into `dmost_data/phoenix_raw/`, and lists any
+the library lacks in `phoenix_raw/missing.txt`. `phoenix-prepare` converts them to
+air wavelengths, trims them to 6000–9600 Å and rebins them logarithmically, as the
+notebook does.
+
+**Telluric grids.** TelFit (Gullikson et al. 2014) runs the LBLRTM radiative
+transfer code and needs its own environment, with older numpy and SciPy.
+
+```bash
+conda create -n telfit -c conda-forge python=3.10 gfortran make git
+conda activate telfit
+pip install "numpy<1.24" "scipy<1.12" astropy matplotlib "cython<3" "setuptools<70" \
+    requests lockfile fortranformat pysynphot
+python $DEIMOS_ROOT/pypeit/make_dmost_data.py install-telfit       # login node
+python $DEIMOS_ROOT/pypeit/make_dmost_data.py telluric --test      # one model, timed
+python $DEIMOS_ROOT/pypeit/make_dmost_data.py telluric-slurm --ntasks 100 --submit
+```
+
+`install-telfit` downloads LBLRTM, LNFL and the AER line list from Zenodo
+and compiles them in `~/.TelFit`.
+The grids hold 4220 models: the coarse grid (H₂O 5–100% in steps of 5,
+O₂ 0.70–2.15 in steps of 0.05) and a fine grid at the steps dmost rounds each
+exposure's fit to (H₂O in steps of 2, O₂ in steps of 0.02). Use the time
+`telluric --test` reports to choose `--ntasks` and `--time`. Re-submitting skips
+finished models.
 
 ### 9c. Working folder and outputs
 
@@ -664,7 +677,7 @@ treats QOP > 2 as extragalactic, 2 as bad and anything lower as a star:
 | 2 | bad data | excluded from everything |
 | 0 or 1 | stars (0 = left unflagged in Marz, 1 = flagged; dmost sets 0 to 1) | fitted as stars |
 
-Keep Marz's automatic QOP assignment switched off (the default): it
+Keep Marz's automatic QOP assignment switched off (the default in the web app): it
 gives confident stellar matches QOP 6, which dmost treats as extragalactic.
 
 **Outputs**, in the dmost folder:
@@ -700,4 +713,6 @@ in two or more exposures are unaffected.
   dwarf spheroidals ([dmost](https://github.com/marlageha/dmost))
 - Marz: Hinton et al. 2016, Astronomy and Computing, 15, 61
 - PHOENIX stellar library: Husser et al. 2013, A&A, 553, A6
+- TelFit: Gullikson, Dodson-Robinson & Kraus 2014, AJ, 148, 53; LBLRTM: Clough et al.
+  2005, JQSRT, 91, 233
 - Data from the Keck Observatory Archive; follow KOA's acknowledgment guidelines

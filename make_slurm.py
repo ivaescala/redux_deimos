@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-make_slurm.py  SEMESTER/MASK [SEMESTER/MASK ...]  [--stages calib science qa collate] [--submit] [options]
+make_slurm.py  MASK [MASK ...]  [--stages calib science qa collate] [--submit] [options]
 
 Write (and optionally submit) one SLURM batch script per mask that runs the
 requested stages of reduce_mask.sh in order, stopping at the first failure.
@@ -10,6 +10,8 @@ runs this script. No conda environment needs to be active: the script needs only
 Python standard library, and the batch job itself activates the PypeIt environment.
   user, home, host          getpass / os / socket
   DEIMOS_RAW, DEIMOS_RDX    environment (DEIMOS_REDUX accepted for DEIMOS_RDX)
+  DMOST_DIR, DMOST_DATA     environment, if set (dmost stage; otherwise reduce_mask.sh defaults)
+  DMOST_FRESH               environment, if set to 1 (dmost stage starts over)
   conda installation        `conda info --base`, CONDA_EXE, or ~/miniforge3 etc.
   conda environment         --env (default: pypeit), checked to contain run_pypeit
   kit folder                location of reduce_mask.sh on PATH (or this script's folder)
@@ -18,7 +20,7 @@ Python standard library, and the batch job itself activates the PypeIt environme
   e-mail                    `git config user.email` (or --mail; omitted if neither)
 
 The batch script exports these explicitly, so the job does not depend on ~/.bashrc.
-Scripts and SLURM logs go to $DEIMOS_RDX/<SEMESTER>/<MASK>/slurm/.
+Scripts and SLURM logs go to $DEIMOS_RDX/<MASK>/slurm/.
 """
 import argparse
 import datetime
@@ -30,7 +32,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-STAGES = ["setup", "calib", "science", "qa", "collate"]
+STAGES = ["setup", "calib", "science", "qa", "collate", "dmost"]
 
 
 def sh(cmd):
@@ -91,12 +93,12 @@ def conda_setup(env_name):
 
 def main():
     p = argparse.ArgumentParser(description="Write SLURM jobs that run reduce_mask.sh stages.")
-    p.add_argument("masks", nargs="+", help="mask folder(s) relative to $DEIMOS_RAW, e.g. 2022B/M32RA1")
+    p.add_argument("masks", nargs="+", help="mask folder name(s), e.g. M32RA1")
     p.add_argument("--stages", nargs="+", default=["calib", "science", "qa", "collate"],
-                   choices=STAGES, help="stages to run, in pipeline order (default: all but setup)")
-    p.add_argument("--partition", default='batch')
+                   choices=STAGES, help="stages to run, in pipeline order (default: calib science qa collate)")
+    p.add_argument("--partition", default=None)
     p.add_argument("--account", default=None)
-    p.add_argument("--mail", default="ivanna.escala@uc.cl", help="address for END/FAIL e-mails")
+    p.add_argument("--mail", default=None, help="address for END/FAIL e-mails")
     p.add_argument("--env", default="pypeit",
                    help="conda environment the job activates (default: pypeit)")
     p.add_argument("--cpus", type=int, default=1)
@@ -125,12 +127,24 @@ def main():
     account = a.account if a.account is not None else slurm_account(user)
     mail = a.mail if a.mail is not None else sh(["git", "config", "--get", "user.email"])
 
+    # dmost settings are passed through only when set; otherwise reduce_mask.sh uses its defaults
+    dmost_exports = []
+    if "dmost" in stages:
+        for var in ("DMOST_DIR", "DMOST_DATA"):
+            if os.environ.get(var):
+                dmost_exports.append(f"export {var}={Path(os.environ[var]).expanduser().resolve()}")
+        if os.environ.get("DMOST_FRESH") == "1":
+            dmost_exports.append("export DMOST_FRESH=1")
+
     print(f"user {user} on {host} | env {env} ({prefix}) | kit {kit}")
     print(f"raw {raw} | redux {rdx}")
     print(f"partition {partition or '(cluster default)'}"
           + (f" [time limit {slurm_timelimit(partition)}]" if partition else "")
           + f" | account {account or '(none)'} | mail {mail or '(none)'}")
-    print(f"stages: {' '.join(stages)} | {a.cpus} cpus, {a.mem}, {a.time}\n")
+    print(f"stages: {' '.join(stages)} | {a.cpus} cpus, {a.mem}, {a.time}")
+    if dmost_exports:
+        print("dmost: " + " | ".join(e.replace("export ", "") for e in dmost_exports))
+    print()
 
     for mask in a.masks:
         out = rdx / mask
@@ -145,13 +159,12 @@ def main():
             print(f"SKIP {mask}: no .pypeit files yet; include 'setup' in --stages")
             continue
 
-        name = mask.strip("/").replace("/", "_")                 # 2022B/M32RA1 -> 2022B_M32RA1
         jobdir = out / "slurm"
         jobdir.mkdir(parents=True, exist_ok=True)
         tag = "-".join(stages)
-        script = jobdir / f"{name}_{tag}.slurm"
+        script = jobdir / f"{mask.replace('/', '_')}_{tag}.slurm"
 
-        sb = [f"#SBATCH --job-name=pypeit_{name}",
+        sb = [f"#SBATCH --job-name=pypeit_{mask.replace('/', '_')}",
               "#SBATCH --nodes=1",
               "#SBATCH --ntasks=1",
               f"#SBATCH --cpus-per-task={a.cpus}",
@@ -180,6 +193,7 @@ export PATH={kit}:$PATH
 export OMP_NUM_THREADS=${{SLURM_CPUS_PER_TASK:-1}}
 export MKL_NUM_THREADS=$OMP_NUM_THREADS
 export OPENBLAS_NUM_THREADS=$OMP_NUM_THREADS
+{chr(10).join(dmost_exports)}
 
 source {conda_sh}
 conda activate {env}
