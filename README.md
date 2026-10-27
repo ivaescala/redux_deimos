@@ -16,7 +16,7 @@ a laptop or on a SLURM cluster.
 | `reduce_mask.sh` | Run one stage (`setup`, `calib`, `science`, `qa`, `collate`, `marz`, `dmost`) for one mask |
 | `deimos.par` | PypeIt parameter block appended to every `.pypeit` file |
 | `assign_calib_by_night.py` | One calibration group per UT night; flags nights with incomplete calibrations |
-| `wavecal_qa.py` | Rule-based check of every slit's wavelength solution, and of the science frames against it (grating tilt, sky-line offset) |
+| `wavecal_qa.py` | Rule-based check of every slit's wavelength solution, and of the science frames against it (sky-line offset) |
 | `wavecal_exclude.py` | Writes `none` rows to the selection table for slits that fail `wavecal_qa.py`, one per science exposure (run by the `collate` stage) |
 | `skysub_qa.py` | Object-free sky-residual statistics and a Ca II triplet leakage test vs. distance from M32 |
 | `make_slurm.py` | Write (and optionally submit) a SLURM job that runs `reduce_mask.sh` stages |

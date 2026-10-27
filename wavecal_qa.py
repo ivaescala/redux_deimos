@@ -20,17 +20,19 @@ Writes <folder>/wavecal_qa.csv (one row per slit, with maskdef_id for matching
 to targets downstream) and prints every slit that is not "ok".
 
 The arc solutions are then tested against the science frames, which the checks
-above cannot do: an arc taken at a different grating tilt than the science gives a
-clean fit that is wrong for the science (2022-09-28: RD2, RE1, RA2 ~+32.5 A).
+above cannot do: a solution can be clean for the arc and still wrong for the science
+(M32RA2, 2022-09-28: science wavelengths ~+32.5 A too red).
 
-  - tilt: the raw grating-tilt encoder (G<n>TLTRAW) of every science frame against
-    the arc of its calibration group; flagged above TILT_TOL steps
   - sky:  every science frame is processed minimally (overscan, trim, mosaic); for
     each "ok" slit a sky spectrum is taken along the middle 60% of the slit, given
     the arc wavelengths, and cross-correlated over +-SKY_SHMAX A, blue and red half
     separately, with PypeIt's sky_single_mg.dat lines (vacuum, like the solutions).
-    A frame is flagged when the median shift exceeds SKY_TOL. The wide range matters:
-    OH lines repeat at ~30-35 A, so a shifted spectrum still matches lines locally.
+    A frame is flagged OFFSET when the median shift exceeds SKY_TOL. The wide range
+    matters: OH lines repeat at ~30-35 A, so a shifted spectrum still matches lines
+    locally. This is the test that decides.
+  - tilt: the raw grating-tilt encoder (G<n>TLTRAW) of every science frame against
+    the arc of its calibration group, noted as TILT above TILT_TOL steps. For
+    information only: M32RD2 has the same difference as RA2 (~197 steps) and no offset.
 
 Writes <folder>/wavecal_sky.csv (shift per science frame, slit and half) and prints
 one summary line per science frame. --no-sky skips the sky test (~25 s per mosaic).
@@ -52,7 +54,7 @@ NLIN_MIN = 20      # arc lines used in the fit
 COV_MIN = 60.0     # percent of the slit spectrum spanned by fitted lines
 DISP_TOL = 0.05    # fractional deviation of dWave from the detector median
 
-TILT_TOL = 100     # encoder steps between science and arc (RB1: 62 steps, -0.15 A; RA2: 198, +32.5 A)
+TILT_TOL = 100     # encoder steps between science and arc; informative only (RA2 198 steps +32.5 A, RD2 197 steps -0.2 A)
 SKY_TOL = 2.0      # A, median sky-line shift of a science frame under the arc solution
 SKY_SHMAX = 60.0   # A, search range of the sky cross-correlation
 SKY_STEP = 0.05    # A
@@ -205,15 +207,18 @@ def science_checks(config_dir, qa, do_sky):
         f = lambda v, fmt, unit="": format(v, fmt) + unit if v is not None and np.isfinite(v) else "-"
         print(f"{exp:>6} {f(ta, 'd'):>9} {f(ts, 'd'):>9} {f(dt, '+d'):>6} {f(med, '+.2f', ' A'):>10} "
               f"{f(ag, '.0f', '%'):>6} {n:>5}  {fl}")
-    bad = [s for s in summary if s[7]]
+    bad = [s for s in summary if "OFFSET" in s[7]]
+    tilt = [s for s in summary if "TILT" in s[7]]
     if bad:
         print(f"\nWARNING: {len(bad)} of {len(summary)} science frames do not match their arc solution "
-              f"({', '.join(s[0] + ' ' + s[7] for s in bad)}). "
-              + ("Their wavelengths will be offset by the sky shift shown; " if do_sky else
-                 "Run without --no-sky to measure the offset; ")
-              + "do not run the science stage before deciding how to handle them.")
+              f"({', '.join(s[0] for s in bad)}): their wavelengths will be offset by the sky shift "
+              "shown. Do not run the science stage before deciding how to handle them.")
     elif do_sky:
-        print(f"All {len(summary)} science frames match their arc solution.")
+        print(f"All {len(summary)} science frames match their arc solution"
+              + (" (the TILT difference did not shift the wavelengths)." if tilt else "."))
+    elif tilt:
+        print(f"\nNOTE: {len(tilt)} science frames differ in grating tilt from their arc; the tilt alone "
+              "does not decide (RD2: no offset, RA2: +32.5 A). Run without --no-sky to measure the offset.")
 
 
 def main():
