@@ -16,7 +16,7 @@ a laptop or on a SLURM cluster.
 | `reduce_mask.sh` | Run one stage (`setup`, `calib`, `science`, `qa`, `collate`, `marz`, `dmost`) for one mask |
 | `deimos.par` | PypeIt parameter block appended to every `.pypeit` file |
 | `assign_calib_by_night.py` | One calibration group per UT night; flags nights with incomplete calibrations |
-| `wavecal_qa.py` | Rule-based check of every slit's wavelength solution |
+| `wavecal_qa.py` | Rule-based check of every slit's wavelength solution, and of the science frames against it (grating tilt, sky-line offset) |
 | `wavecal_exclude.py` | Writes `none` rows to the selection table for slits that fail `wavecal_qa.py`, one per science exposure (run by the `collate` stage) |
 | `skysub_qa.py` | Object-free sky-residual statistics and a Ca II triplet leakage test vs. distance from M32 |
 | `make_slurm.py` | Write (and optionally submit) a SLURM job that runs `reduce_mask.sh` stages |
@@ -332,6 +332,18 @@ than 60% (or more than 100%) of the spectrum, its RMS exceeds 0.4 pix, or PypeIt
 flagged it. Slits with no solution at all are `fail`; alignment boxes appear as
 `box`.
 
+These checks only test the arc fits. An arc taken at a different grating tilt than
+the science frames gives a clean fit that is wrong for the science: on 2022-09-28 the
+science of M32RD2, M32RE1 and M32RA2 was taken at a tilt ~200 encoder steps from that
+night's arcs, and RA2's wavelengths came out ~32.5 Å too red. `wavecal_qa.py`
+therefore also compares each science frame's raw tilt (`G<n>TLTRAW`) with its arc
+(flag `TILT` above 100 steps) and measures the sky lines of each minimally processed
+science frame under the arc solution, cross-correlating over ±60 Å (flag `OFFSET`
+above 2 Å; OH lines repeat every ~30–35 Å, so a narrow search would match the wrong
+lines). The summary is printed per science frame and the per-slit shifts go to
+`wavecal_sky.csv`; a flagged mask should not go on to the science stage. The sky test
+adds ~25 s per mosaic and science frame; `--no-sky` skips it.
+
 PypeIt itself excludes few of these slits. With DEIMOS's default method, it flags
 a slit `BADWVCALIB`, and skips it in the science stage, only when no fit exists. A fit above its RMS threshold (0.15 × arc FWHM) is logged as poor
 but kept, so the slit is extracted with that solution. Collate's RMS cut then
@@ -608,8 +620,8 @@ dmost_data/
 ```
 
 `make_dmost_data.py` builds them, following dmost's notebooks
-`prepare_pheonix_templates.ipynb` and `mk_telluric_grid.ipynb`. It is
-recommended to build the templates in a cluster environment.
+`prepare_pheonix_templates.ipynb` and `mk_telluric_grid.ipynb`. Downloads run on a
+login node; the telluric grid runs as a SLURM array.
 
 **Sky lines and stellar templates**, in the PypeIt environment:
 
@@ -629,7 +641,7 @@ air wavelengths, trims them to 6000–9600 Å and rebins them logarithmically, a
 notebook does.
 
 **Telluric grids.** TelFit (Gullikson et al. 2014) runs the LBLRTM radiative
-transfer code and needs its own environment, with older numpy and SciPy.
+transfer code and needs its own environment, with older numpy and SciPy:
 
 ```bash
 conda create -n telfit -c conda-forge python=3.10 gfortran make git
@@ -641,13 +653,17 @@ python $DEIMOS_ROOT/pypeit/make_dmost_data.py telluric --test      # one model, 
 python $DEIMOS_ROOT/pypeit/make_dmost_data.py telluric-slurm --ntasks 100 --submit
 ```
 
-`install-telfit` downloads LBLRTM, LNFL and the AER line list from Zenodo
-and compiles them in `~/.TelFit`.
-The grids hold 4220 models: the coarse grid (H₂O 5–100% in steps of 5,
-O₂ 0.70–2.15 in steps of 0.05) and a fine grid at the steps dmost rounds each
-exposure's fit to (H₂O in steps of 2, O₂ in steps of 0.02). Use the time
+`install-telfit` downloads LBLRTM, LNFL and the AER line list from Zenodo (~470 MB)
+and compiles them in `~/.TelFit` (set `TELLURICMODELING` to use another folder).
+The grids hold 4350 models: the notebook's coarse grid (H₂O 5–100% in steps of 5,
+O₂ 0.70–2.15 in steps of 0.05), a fine grid at the steps dmost rounds each
+exposure's fit to (H₂O in steps of 2, O₂ in steps of 0.02), and the models dmost
+loads for each slit's best coarse point (H₂O rounded to 2, O₂ to 0.05). Use the time
 `telluric --test` reports to choose `--ntasks` and `--time`. Re-submitting skips
 finished models.
+
+Check that everything is in place with `python $DEIMOS_ROOT/pypeit/make_dmost_data.py check`.
+The `dmost` stage also lists missing files and stops.
 
 ### 9c. Working folder and outputs
 
