@@ -573,6 +573,31 @@ re-reduction of rejected slits (section 7):
         max_mask_frac = 0.97     # default 0.80
 ```
 
+**Short slits.** For slitmasks PypeIt sets `minimum_slit_length = 3.0` (arcsec).
+During edge tracing it drops any slit whose traced length is shorter. A dropped
+slit never appears in `slit_report.txt`, so it is easy to miss. Traced lengths can
+come out shorter than design lengths, so a slit designed just above the threshold
+can still be dropped.
+
+Check the design lengths after the `setup` stage and before `calib`. Every raw
+frame carries the mask design (`slitTyp` P = science slit, A = alignment box):
+
+```python
+from astropy.io import fits
+d = fits.open("DE.<date>.<exp>.<n>.fits")["DesiSlits"].data
+print(sorted(d["slitLen"][d["slitTyp"] == "P"])[:5])    # shortest science slits, arcsec
+```
+
+If any science slit is shorter than about 3.5″, keep a copy of the `.pypeit` file
+(e.g. `keck_deimos_A.pypeit.orig_minslit3`) and lower the threshold in its
+parameter block before running `calib`:
+
+```
+[calibrations]
+    [[slitedges]]
+        minimum_slit_length = 2.5    # default 3.0; traces design slit <maskdef_id> (<length> arcsec)
+```
+
 ---
 
 ## 9. Velocities with dmost
