@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-inspect_slits.py  SPEC2D [SPEC2D ...]  --maskdef ID [ID ...]  [--outdir DIR] [--calib DIR]
+inspect_slits.py  SPEC2D [SPEC2D ...]  --maskdef ID [ID ...]  [--outdir DIR] [--calib DIR] [--main DIR]
 
 Look at what is on a set of slits using only the existing spec2d (and spec1d) files,
 without re-running PypeIt. Intended for slits that PypeIt rejected (BADSKYSUB), which
@@ -12,6 +12,9 @@ For each maskdef_id it writes one PNG (one row per exposure):
      single star (Gaussian with the median FWHM of the stars PypeIt detected on the same
      mosaic in that exposure) centred on the target peak and scaled to its height.
      Light the model does not account for comes from other sources on the slit.
+     Dashed lines mark the objects PypeIt extracted on the slit, read from the spec1d next
+     to each spec2d (red: the target, grey: SERENDIP; "forced" = not detected, extracted at
+     PypeIt's design position). Rejected slits have none.
   2. 2D cutout around the Ca II triplet, sky-subtracted along lines of constant
      wavelength (see below)
   3. 1D spectrum in the Ca II triplet window: sum within +-3 px of the target peak,
@@ -30,6 +33,12 @@ never extrapolated beyond the wavelengths it was fit over. Using each pixel's wa
 tilt of the sky lines across the slit. Light from neighbouring stars that survives the
 clipping enters the sky and lowers the target's continuum. It is still a crude sky: use
 the spectra to recognise Ca II triplet absorption, not to measure it.
+
+Test reductions (section 7, slitspatnum subset): pass --main with the main reduction's
+Science folder. A subset run leaves out the alignment boxes, so PypeIt stores a slitmask
+offset of 0 and its design positions are shifted; --main takes the offset of the same
+exposure and mosaic from the main spec2d, and the single-star FWHM from the main spec1d
+(a subset run has too few stars per mosaic).
 
 PypeIt writes no wavelengths for slits it rejected (the waveimg is zero there), so for
 those slits the wavelengths are rebuilt from the Tilts and WaveCalib calibration files
@@ -312,6 +321,8 @@ def main():
     ap.add_argument("spec2d", nargs="+")
     ap.add_argument("--maskdef", nargs="+", type=int, required=True)
     ap.add_argument("--outdir", default="inspect_slits")
+    ap.add_argument("--main", default=None,
+                    help="main reduction's Science folder, when the spec2d files come from a test reduction")
     ap.add_argument("--calib", default=None,
                     help="Calibrations folder (default: ../Calibrations relative to the spec2d files)")
     a = ap.parse_args()
@@ -336,6 +347,16 @@ def main():
                 continue
             flex = s2d.sci_spat_flexure
             sfw = star_fwhm_from_spec1d(fn, det, s1d_cache)
+            if a.main:
+                mfn = [f for f in os.listdir(a.main) if f.startswith("spec2d_") and f".{tag}." in f]
+                if len(mfn) != 1:
+                    raise SystemExit(f"--main: expected one spec2d for exposure {tag} in {a.main}, found {len(mfn)}")
+                mfn = os.path.join(a.main, mfn[0])
+                from astropy.io import fits
+                slits.maskdef_offset = float(fits.getheader(mfn, f"{det}-SLITS")["MASKDEF_OFFSET"])
+                sfw = star_fwhm_from_spec1d(mfn, det, s1d_cache)
+            sobjs = s1d_cache[os.path.join(os.path.dirname(fn), os.path.basename(fn).replace("spec2d_", "spec1d_", 1))]
+            left_all, _, _ = slits.select_edges(flexure=flex)
             for i, mid in enumerate(slits.maskdef_id):
                 if mid not in data:
                     continue
@@ -349,7 +370,14 @@ def main():
                 w, sub = sky_subtract(rect, ivar2d, wave2d, wrow, it, sfw)
                 k0 = int(np.round(it))
                 spec = np.sum(sub[:, max(k0 - BAND, 0):k0 + BAND + 1], axis=1) if w.size else np.array([])
-                data[mid].append(dict(exp=tag, det=det, spat=int(slits.spat_id[i]), name=name, flags=flags,
+                x0 = np.round(left_all[left_all.shape[0] // 2, i])
+                tr = []
+                if sobjs is not None:
+                    for j in range(len(sobjs)):
+                        o = sobjs[j]
+                        if o.DET == det and o.SLITID == slits.spat_id[i]:
+                            tr.append((o.SPAT_PIXPOS - x0, o.MASKDEF_OBJNAME, bool(o.MASKDEF_EXTRACT)))
+                data[mid].append(dict(exp=tag, det=det, spat=int(slits.spat_id[i]), name=name, flags=flags, tr=tr,
                                       exp_pos=exp_pos, prof=prof, st=st, sfw=sfw, w=w, sub=sub, spec=spec))
 
     print(f"{'maskdef':>8} {'objname':>10} {'exp':>6} {'det':>5} {'spat':>5} {'len':>4} {'design':>6} "
@@ -378,6 +406,9 @@ def main():
                         label=f"single star, FWHM {d['sfw']:.1f} px")
             if d["exp_pos"] is not None:
                 a0.axvline(d["exp_pos"], color="C0", ls=":", label="design position")
+            for x, nm, forced in d["tr"]:
+                a0.axvline(x, color="0.5" if nm == "SERENDIP" else "C3", ls="--", lw=1.2,
+                           label=f"extracted: {nm}{' (forced)' if forced else ''}")
             a0.set_title(f"{mid} {d['name']}  {d['exp']} {d['det']}  [{d['flags']}]", fontsize=9)
             a0.set_xlabel("pixels from left edge")
             a0.legend(fontsize=7)

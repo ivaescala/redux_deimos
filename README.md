@@ -16,7 +16,7 @@ a laptop or on a SLURM cluster.
 | `reduce_mask.sh` | Run one stage (`setup`, `calib`, `science`, `qa`, `collate`, `marz`, `dmost`) for one mask |
 | `deimos.par` | PypeIt parameter block appended to every `.pypeit` file |
 | `assign_calib_by_night.py` | One calibration group per UT night; flags nights with incomplete calibrations |
-| `wavecal_qa.py` | Rule-based check of every slit's wavelength solution, and of the science frames against it (sky-line offset) |
+| `wavecal_qa.py` | Rule-based check of every slit's wavelength solution, and of the science frames against it (grating tilt, sky-line offset) |
 | `wavecal_exclude.py` | Writes `none` rows to the selection table for slits that fail `wavecal_qa.py`, one per science exposure (run by the `collate` stage) |
 | `skysub_qa.py` | Object-free sky-residual statistics and a Ca II triplet leakage test vs. distance from M32 |
 | `make_slurm.py` | Write (and optionally submit) a SLURM job that runs `reduce_mask.sh` stages |
@@ -332,15 +332,15 @@ than 60% (or more than 100%) of the spectrum, its RMS exceeds 0.4 pix, or PypeIt
 flagged it. Slits with no solution at all are `fail`; alignment boxes appear as
 `box`.
 
-The check also measures the sky lines of each science frame under the arc solution, 
-to confirm that there are no systematic offsets in the absolute wavelength solution. 
-The summary is printed per science frame and the per-slit shifts go to
-`wavecal_sky.csv`; a flagged mask should not go on to the science stage. The flag
- `--no-sky` skips this check.
+The check also measures the sky lines of each science frame under the arc solution, to confirm that there are no systematic offsets in the absolute wavelength solution. The summary is printed per science
+frame and the per-slit shifts go to `wavecal_sky.csv`. The flag `--no-sky` skips
+this check.
 
-PypeIt itself excludes few of these bad slits. With DEIMOS's default method, it flags
-a slit `BADWVCALIB`, and skips it in the science stage, only when no fit exists. 
-Bad slits therefore stay in the reduction and are excluded at the
+PypeIt itself excludes few of these slits. With DEIMOS's default method, it flags
+a slit `BADWVCALIB`, and skips it in the science stage, only when no fit exists. A fit above its RMS threshold (0.15 × arc FWHM) is logged as poor
+but kept, so the slit is extracted with that solution. Collate's RMS cut then
+drops those above 0.4 pix but misses solutions locked onto the wrong lines with a
+small RMS. Bad slits therefore stay in the reduction and are excluded at the
 `collate` stage: `wavecal_exclude.py` writes a `none` row to `selection.csv` for
 every `bad` or `fail` slit and every science exposure of its calibration group,
 and `merge_spec1d.py` drops those slits' objects (the target and any serendipitous
@@ -463,11 +463,15 @@ In `$TEST/keck_deimos_A.pypeit`, add to the parameter block, under the existing
 
 ```
 [rdx]
-    slitspatnum = <det>:<spat_id>, <det>:<spat_id>, ...     # e.g. MSC01:<spat_id>, one per candidate
+    slitspatnum = <det>:<spat_id>, <det>:<spat_id>, ...     # e.g. MSC01:<spat_id>, one per candidate, plus the alignment boxes
 [reduce]
     [[skysub]]
         max_mask_frac = 0.97
 ```
+
+List the alignment boxes (`BOXSLIT` in `slit_report.txt`) in `slitspatnum` as well.
+PypeIt measures the slitmask offset from the stars in the boxes; without them the
+subset run stores an offset of 0 (section 7d).
 
 Then run:
 
@@ -483,6 +487,15 @@ python $KIT/skysub_qa.py $TEST/Science/spec2d_*.fits --out $TEST/skysub_qa.csv
 cat $TEST/Science/spec1d_*.txt
 python $KIT/check_recovered.py $TEST/Science/spec1d_*.fits > $TEST/check_test.txt
 python $KIT/check_recovered.py $CFG/Science/spec1d_*.fits  > $CFG/check_main.txt
+```
+
+To see where the test reduction placed its extractions, run `inspect_slits.py` on the
+test spec2d files with `--main`, which takes the slitmask offset and the single-star
+FWHM from the main reduction:
+
+```bash
+python $KIT/inspect_slits.py $TEST/Science/spec2d_*.fits --main $CFG/Science \
+    --maskdef <maskdef_id> ... --outdir $TEST/inspect_slits
 ```
 
 Apply the acceptance criteria of section 7b to each recovered slit-exposure.
@@ -521,10 +534,12 @@ and the duplicates removed.
 
 ### 7d. Caveat
 
-A subset run does not reproduce the main reduction exactly. With `slitspatnum`,
-PypeIt fits no slitmask offset (`MaskOFF` 0.00 in `slit_report.txt`). Targets are
-still matched to their design entries, but serendipitous objects get coordinates
-shifted by the offset the main reduction applied. Object finding can also
+A subset run does not reproduce the main reduction exactly. When `slitspatnum`
+leaves out the alignment boxes, PypeIt fits no slitmask offset (`MaskOFF` 0.00 in
+`slit_report.txt`): design positions, the matching of detected objects to targets
+and the position of forced extractions are all shifted by the offset the main
+reduction applied, and serendipitous objects
+get shifted coordinates. Object finding can also
 differ: a slit-exposure that extracted normally in the main run can fail in the
 subset run. Take every slit-exposure the main reduction already extracted from
 the main reduction.
