@@ -9,6 +9,10 @@ M31-system masks, to a clone of https://github.com/marlageha/dmost:
     dmost_create_maskfile.py, run_collate1d_marz.py   np.in1d   -> np.isin
     dmost_telluric.py                                  np.float  -> float
     dmost_emcee.py, dmost_coadd_emcee.py               numpy.core.multiarray.interp -> numpy.interp
+    dmost_chip_gap.py                                  vexp=m[0] -> vexp=0: m[0] is a numpy bool,
+                                                       which numpy 2 indexes with as an empty mask;
+                                                       0 is what older numpy used, and what
+                                                       dmost_chi2_template.py keeps
 
   collate tolerance
     dmost_flexure.py re-collates the flexure-corrected spec1d files with a hard-coded
@@ -16,6 +20,13 @@ M31-system masks, to a clone of https://github.com/marlageha/dmost:
     stage of reduce_mask.sh uses (0.5", 0.4 pix), so the coadds used for templates,
     low-S/N velocities and equivalent widths group objects the same way as the
     collate_report.dat dmost builds its slit table from.
+
+  velocity limits for M31-system masks
+    dmost_chi2_template.py  template search  -500..+490 -> -900..+490 km/s, step 10
+    dmost_emcee.py          MCMC prior       -800..+800 -> -1000..+800 km/s
+    dmost_coadd_emcee.py    MCMC prior       -700..+700 -> -1000..+800 km/s
+    M31 stars here reach about -720 km/s. Chains start within 25 km/s of the template
+    velocity and can stay near the old -500 floor, so a star beyond it can get a wrong velocity.
 
   telluric file names
     dmost_telluric.parse_tfile() reads H2O and O2 as fields 3 and 5 of the full template
@@ -108,6 +119,10 @@ def main():
         literal(core / "dmost_telluric.py", "spl = tfile.split('_')", "spl = os.path.basename(tfile).split('_')"),
         literal(core / "dmost_emcee.py", interp_old, interp_new),
         literal(core / "dmost_coadd_emcee.py", interp_old, interp_new),
+        literal(core / "dmost_chip_gap.py", "vexp=m[0]\n", "vexp=0  # was m[0] (patch_dmost.py)\n"),
+        literal(core / "dmost_chi2_template.py", "vrange = np.arange(-500,500,10)", "vrange = np.arange(-900,500,10)"),
+        literal(core / "dmost_emcee.py", "if (-800. < theta[0] < 800.)", "if (-1000. < theta[0] < 800.)"),
+        literal(core / "dmost_coadd_emcee.py", "if (-700. < theta[0] < 700.)", "if (-1000. < theta[0] < 800.)"),
         regex(core / "dmost_flexure.py",
               r"(pypeit_collate_1d --spec1d_files \.\./Science_flex/spec1d_\*fits) --toler [^'\"]*(['\"])",
               rf"\1 --toler {a.toler} --wv_rms_thresh {a.wv_rms}\2",

@@ -23,7 +23,7 @@ a laptop or on a SLURM cluster.
 | `inspect_slits.py` | Spatial profiles and Ca II triplet spectra of chosen slits from existing spec2d files, including slits PypeIt rejected (section 7) |
 | `check_recovered.py` | Per-exposure extraction and sky-line residual checks of target spectra in spec1d files (section 7) |
 | `merge_spec1d.py` | Build one spec1d per exposure from the main and test reductions according to the selection table, dropping excluded slits and duplicate objects (run by the `collate` stage) |
-| `patch_dmost.py` | One-time fixes to a dmost clone for PypeIt 2.0.1 / numpy ≥ 2.4 and this reduction's collate settings (section 9) |
+| `patch_dmost.py` | One-time fixes to a dmost clone for PypeIt 2.0.1 / numpy ≥ 2.4, this reduction's collate settings and wider velocity limits (section 9) |
 | `dmost_prep.py` | Build dmost's working folder from the `collate` outputs and check its inputs (run by the `marz` and `dmost` stages) |
 | `make_dmost_data.py` | Build the stellar templates, telluric grids and sky-line list dmost reads (section 9b) |
 
@@ -96,12 +96,14 @@ python -c "import qtpy; print(qtpy.API_NAME)"            # PyQt6
 
 ## 2. Directory structure
 
-Raw data, reduced data and this repository sit side by side under one root
-(`$DEIMOS_ROOT`, e.g. `~/deimos`). Raw and reduced trees mirror each other as
+On a cluster, keep data on scratch and code in your home directory: raw data,
+reductions and dmost's data go under `/scratch/$USER`, while this repository and
+the dmost clone go under `$DEIMOS_ROOT` (e.g. `~/deimos`). On a local machine
+without scratch space, use any folder. Raw and reduced trees mirror each other as
 `<semester>/<mask>`:
 
 ```
-$DEIMOS_ROOT/
+/scratch/$USER/
 ├── raw/                               $DEIMOS_RAW
 │   └── 2022B/                         koa_deimos_fetch.py --outdir
 │       ├── M32RA1/                    DE.*.fits: science, flats, arcs (+ biases)
@@ -133,15 +135,17 @@ $DEIMOS_ROOT/
 │       └── dmost/                     dmost working folders, one per mask (section 9)
 │           ├── marz_files/
 │           └── M32RA1/
-├── pypeit/                            this repository (on $PATH)
-├── dmost/                             patched dmost clone ($DMOST_DIR, section 9)
 └── dmost_data/                        dmost templates and sky lines ($DMOST_DATA, section 9)
+
+$DEIMOS_ROOT/
+├── pypeit/                            this repository (on $PATH)
+└── dmost/                             patched dmost clone ($DMOST_DIR, section 9)
 ```
 
 Set it up:
 
 ```bash
-mkdir -p ~/deimos/raw ~/deimos/redux
+mkdir -p /scratch/$USER/raw /scratch/$USER/redux /scratch/$USER/dmost_data
 git clone https://github.com/ivaescala/redux_deimos.git ~/deimos/pypeit
 ```
 
@@ -154,19 +158,22 @@ downloads.
 ## 3. Environment variables
 
 Add this block to `~/.bashrc` (Linux, clusters) or `~/.zshrc` (macOS). Edit the
-first line to match your root folder.
+paths to match your folders.
 
 ```bash
 # --- DEIMOS / PypeIt reductions ---
 export DEIMOS_ROOT="$HOME/deimos"
-export DEIMOS_RAW="$DEIMOS_ROOT/raw"
-export DEIMOS_RDX="$DEIMOS_ROOT/redux"
+export DEIMOS_RAW="/scratch/$USER/raw"
+export DEIMOS_RDX="/scratch/$USER/redux"
+export DMOST_DATA="/scratch/$USER/dmost_data"
 export PATH="$DEIMOS_ROOT/pypeit:$PATH"
-# optional, only if dmost or its data are not at the default locations:
+# optional, only if the dmost clone is not at the default location:
 # export DMOST_DIR="$DEIMOS_ROOT/dmost"
-# export DMOST_DATA="$DEIMOS_ROOT/dmost_data"
 # --- end DEIMOS ---
 ```
+
+dmost runs much faster from a scratch disk than from a home directory on a cluster
+because its MCMC writes each chain to disk at every step.
 
 The semester is given in the paths passed to the scripts, e.g.
 `--outdir $DEIMOS_RAW/2022B` or `reduce_mask.sh 2022B/M32RA1 setup`.
@@ -609,7 +616,8 @@ section 8) with its own: a linear flexure fit to sky lines per slit, a synthetic
 telluric model per exposure, a PHOENIX stellar template per star, and an MCMC fit
 of velocity and telluric shift in each exposure. Velocities are combined across
 exposures as a weighted mean. When a single-exposure fit fails (typically at
-S/N ≈ 2 per pixel), dmost fits the coadded spectrum instead.
+S/N ≈ 2 per pixel), dmost fits the coadded spectrum instead. This version of the
+code widens dmost's velocity limits for M31-system masks (section 9a).
 
 The `marz` and `dmost` stages replace steps 1–4 of dmost's own README
 (`run_dmost_planfiles`, `run_dmost_mask_setup`, its `run_pypeit` call and its
@@ -628,17 +636,18 @@ python $DEIMOS_ROOT/pypeit/patch_dmost.py $DEIMOS_ROOT/dmost
 ```
 
 dmost is not pip-installed; the stages put the clone on `PYTHONPATH`.
-`patch_dmost.py` makes the following change, including modifications for
+`patch_dmost.py` makes the following changes, along with modifications for
 compatibility with PypeIt 2.0.1:
 
 | Change | Why |
 |---|---|
 | Flexure re-collate: `--toler 1.` → `--toler 0.5 --wv_rms_thresh 0.4` | dmost re-coadds the flexure-corrected spectra for its template, low-S/N and equivalent-width fits. At 1″ it can group a target with a neighbour that the 0.5″ `collate` stage keeps separate |
+| Velocity limits: template search −500..+490 → −900..+490 km/s (step 10); MCMC priors −800..+800 (exposures) and −700..+700 (coadds) → −1000..+800 km/s | M31 stars on these masks reach about −720 km/s. Chains start within 25 km/s of the template velocity, so a star beyond the old −500 limit could get a wrong velocity |
 
 ### 9b. Templates and sky lines
 
 dmost reads three sets of files that are not in its repository. Put them under
-`$DEIMOS_ROOT/dmost_data/` (or set `DMOST_DATA`):
+`$DMOST_DATA`:
 
 ```
 dmost_data/
