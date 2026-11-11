@@ -9,7 +9,9 @@ masks so the rejection list is reproducible. A slit is "bad" if any check fails:
   - dispersion differs from the detector median by more than DISP_TOL
   - fewer than NLIN_MIN arc lines in the fit
   - fitted lines cover less than COV_MIN of the slit spectrum, or more than 100%
-  - RMS above RMS_MAX pixels (the Geha et al. 2026 cut)
+  - RMS above the grating's limit in pixels: 0.4 (the Geha et al. 2026 cut, 1200G), 0.6 for 600ZD
+    (0.4 px is 0.13 A at 1200G but 0.26 A at 600ZD; Ashley, 2026-11-10). rms_max() gives it; --print-rms-max
+    prints it for the folder's grating, so the collate stage can use the same value.
   - PypeIt itself flagged the slit (BADWVCALIB)
 
 The RMS cut alone misses solutions that lock onto the wrong lines with a small
@@ -49,7 +51,8 @@ from astropy.table import Table, vstack
 from scipy.ndimage import median_filter
 from scipy.signal import correlate
 
-RMS_MAX = 0.4      # pixels
+RMS_MAX = 0.4      # pixels, default (1200G)
+RMS_MAX_GRATING = {"600ZD": 0.6}   # pixels, per grating (Ashley, 2026-11-10)
 NLIN_MIN = 20      # arc lines used in the fit
 COV_MIN = 60.0     # percent of the slit spectrum spanned by fitted lines
 DISP_TOL = 0.05    # fractional deviation of dWave from the detector median
@@ -64,7 +67,21 @@ COLS = ["minWave", "Wave_cen", "maxWave", "dWave", "Nlin", "IDs_Wave_cov(%)",
         "measured_fwhm", "RMS"]
 
 
-def classify(diag, flags):
+def grating(config_dir):
+    """Grating (dispname) of the configuration, from its .pypeit file."""
+    from pypeit.inputfiles import PypeItFile
+    pf = PypeItFile.from_file(os.path.join(config_dir, os.path.basename(os.path.normpath(config_dir)) + ".pypeit"))
+    g = {str(x).strip() for x in pf.data["dispname"]}
+    if len(g) != 1:
+        raise SystemExit(f"{config_dir}: expected one grating, found {sorted(g)}")
+    return g.pop()
+
+
+def rms_max(grat):
+    return RMS_MAX_GRATING.get(grat, RMS_MAX)
+
+
+def classify(diag, flags, rms_limit=RMS_MAX):
     """Return (status, reason) lists for a wave_diagnostics table."""
     solved = np.asarray(diag["Nlin"]) > 0
     med_disp = np.median(np.asarray(diag["dWave"])[solved]) if solved.any() else np.nan
@@ -84,7 +101,7 @@ def classify(diag, flags):
         cov = row["IDs_Wave_cov(%)"]
         if not COV_MIN <= cov <= 100.5:
             why.append(f"coverage {cov:.0f}%")
-        if row["RMS"] > RMS_MAX:
+        if row["RMS"] > rms_limit:
             why.append(f"RMS {row['RMS']:.2f}")
         if "BADWVCALIB" in fl:
             why.append("PypeIt BADWVCALIB")
@@ -228,7 +245,13 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[1])
     p.add_argument("config_dir")
     p.add_argument("--no-sky", action="store_true", help="skip the sky-line test of the science frames")
+    p.add_argument("--print-rms-max", action="store_true", help="print the RMS limit (pixels) for this folder's grating and exit")
     a = p.parse_args()
+    grat = grating(a.config_dir)
+    rms_limit = rms_max(grat)
+    if a.print_rms_max:
+        print(rms_limit)
+        return
     caldir = os.path.join(a.config_dir, "Calibrations")
 
     tables = []
@@ -245,7 +268,7 @@ def main():
             flags.append([] if i is None else slits.bitmask.flagged_bits(slits.mask[i]))
             mids.append(-1 if i is None or slits.maskdef_id is None else int(slits.maskdef_id[i]))
 
-        status, reason = classify(diag, flags)
+        status, reason = classify(diag, flags, rms_limit)
         t = Table()
         t["calib_key"] = [key] * len(diag)
         t["det"] = [key.split("_")[-1]] * len(diag)
@@ -268,7 +291,7 @@ def main():
         print(f"{r['det']:<6}{r['spat_id']:>8}{r['maskdef_id']:>11}  {r['status']:<6} {r['reason']}")
     n = {s: int((t["status"] == s).sum()) for s in ("ok", "bad", "fail", "box")}
     print(f"\n{len(t)} slits: {n['ok']} ok, {n['bad']} bad, {n['fail']} no solution, "
-          f"{n['box']} alignment boxes.  Table -> {out}")
+          f"{n['box']} alignment boxes ({grat}, RMS limit {rms_limit} px).  Table -> {out}")
 
     science_checks(a.config_dir, t, not a.no_sky)
 

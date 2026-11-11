@@ -127,8 +127,10 @@ case "$STAGE" in
       # always merge, so the exclusions apply whether or not slits were recovered (section 7)
       python "$KIT/merge_spec1d.py" --main "$CFG/Science" --test "$OUT/test_maskfrac/Science" \
           --select "$CFG/selection.csv" --out "$CFG/Science_merged"
+      # same per-grating RMS limit as wavecal_qa.py (0.4 px; 0.6 px for 600ZD)
+      RMSMAX=$(python "$KIT/wavecal_qa.py" "$CFG" --print-rms-max 2>/dev/null | tail -1)
       pypeit_collate_1d --spec1d_files "$CFG"/Science_merged/spec1d_*.fits \
-          --tolerance 0.5 --wv_rms_thresh 0.4 --outdir "$CFG/collate1d"
+          --tolerance 0.5 --wv_rms_thresh "$RMSMAX" --outdir "$CFG/collate1d"
     done
     ;;
   marz)

@@ -23,11 +23,14 @@ For each maskdef_id it writes one PNG (one row per exposure):
      -600 to 0 km/s, where M31 and M32 stars fall.
 
 Printed per slit/exposure: slit length, design position, target offset from it, target
-FWHM, the model-star FWHM, the brightest other source (offset and height relative to the
+FWHM (half-height width, interpolated; the peak is searched within +-3 px of the design
+position and followed uphill up to one single-star FWHM beyond, flagged "peak beyond
++-3 px"; "no peak near design" if the profile is still rising there, t_fwhm then nan),
+the model-star FWHM, the brightest other source (offset and height relative to the
 target), and the fraction of the slit's light within +-1 FWHM of the target.
 
 Sky estimate: pixels farther than 2 FWHM from the target, fit with a cubic spline in
-wavelength (knots every 0.3 A; iterative clipping against the residual scatter measured
+wavelength (knots every 0.3 A or 0.9 px, whichever is wider; iterative clipping against the residual scatter measured
 as a function of wavelength, rejecting positive outliers harder), then evaluated at every pixel's own wavelength and
 never extrapolated beyond the wavelengths it was fit over. Using each pixel's wavelength follows the
 tilt of the sky lines across the slit. Light from neighbouring stars that survives the
@@ -63,7 +66,11 @@ C_KMS = 299792.458
 # BADSKYSUB slit carries OFFSLITS even though the data there are fine.
 PIXFLAGS = ["BPM", "CR", "SATURATION", "MINCOUNTS", "IS_NAN", "IVAR0", "IVAR_NAN", "BADSCALE"]
 BAND = 3                                 # half-width (px) of the 1D sum
-SKY_KNOT = 0.3                           # Angstrom, knot spacing of the sky spline
+SKY_KNOT = 0.3                           # Angstrom, minimum knot spacing of the sky spline
+SKY_KNOT_PX = 0.9                        # ... and at least this many pixels along the spectrum
+                                         # (0.3 A was set for 1200G, 0.33 A/px; 600ZD has 0.645 A/px)
+SEARCH = 3                               # px, target searched within +-SEARCH of the design position
+REACH = 1.0                              # single-star FWHMs the peak may lie beyond that window
 FWHM_DEFAULT = 6.0                       # px, if no spec1d stars are available
 
 
@@ -97,22 +104,46 @@ def target_stats(prof, expected, star_fwhm):
     if not win.any():
         return out
     it = int(k[win][np.nanargmax(p[win])])
+    # The window maximum can sit on the flank of a star that peaks just outside +-SEARCH px.
+    # Follow the profile uphill to the real peak, at most REACH single-star FWHMs beyond the
+    # window; if it is still rising there, there is no peak near the design position.
+    lim = SEARCH + int(np.ceil(REACH * star_fwhm))
+    peak = "ok"
+    while True:
+        up = [j for j in (it - 1, it + 1)
+              if 0 <= j < p.size and np.isfinite(p[j]) and p[j] > p[it]]
+        if not up:
+            break
+        j = max(up, key=lambda q: p[q])
+        if abs(j - k0) > lim:
+            peak = "none"
+            break
+        it = j
+    if peak == "ok" and abs(it - k0) > SEARCH:
+        peak = "outside"
     h = p[it]
-    # width: walk outwards while above half height and not climbing into a neighbour
+    # width: walk outwards while above half height and not climbing into a neighbour,
+    # then interpolate the half-height crossing (a stop at a neighbour counts half a pixel)
     lo = it
     while lo > 0 and np.isfinite(p[lo - 1]) and p[lo - 1] >= h / 2 and p[lo - 1] <= 1.05 * p[lo]:
         lo -= 1
     hi = it
     while hi < p.size - 1 and np.isfinite(p[hi + 1]) and p[hi + 1] >= h / 2 and p[hi + 1] <= 1.05 * p[hi]:
         hi += 1
+    xl, xr = lo - 0.5, hi + 0.5
+    if lo > 0 and np.isfinite(p[lo - 1]) and p[lo - 1] < h / 2 < p[lo]:
+        xl = lo - (p[lo] - h / 2) / (p[lo] - p[lo - 1])
+    if hi < p.size - 1 and np.isfinite(p[hi + 1]) and p[hi + 1] < h / 2 < p[hi]:
+        xr = hi + (p[hi] - h / 2) / (p[hi] - p[hi + 1])
     away = good & (np.abs(k - it) > 2 * star_fwhm)
     if away.any():
         inb = int(k[away][np.nanargmax(p[away])])
         out.update(nbr_off=float(inb - it), nbr_ratio=float(p[inb] / h))
     pos = np.clip(np.nan_to_num(p), 0, None)
     near = np.abs(k - it) <= star_fwhm
-    out.update(it=float(it), off=float(it - expected), fwhm=float(hi - lo + 1), h=float(h),
-               base=float(base), tfrac=float(pos[near].sum() / pos.sum()) if pos.sum() > 0 else np.nan)
+    out.update(it=float(it), off=float(it - expected), h=float(h), base=float(base), peak=peak,
+               fwhm=float(xr - xl) if peak != "none" else np.nan,
+               tfrac=float(pos[near].sum() / pos.sum()) if pos.sum() > 0 else np.nan)
     return out
 
 
@@ -132,8 +163,8 @@ def local_scatter(ws, res, use, width=0.5):
     return np.interp(ws, cen, sig)
 
 
-def fit_sky(ws, fs):
-    """Cubic spline in wavelength (knots every SKY_KNOT A), iteratively clipped against the
+def fit_sky(ws, fs, knot=SKY_KNOT):
+    """Cubic spline in wavelength (knots every `knot` A), iteratively clipped against the
     local scatter of the residuals.
 
     The scatter is measured as a function of wavelength because the noise on bright sky
@@ -149,7 +180,7 @@ def fit_sky(ws, fs):
     spl, rng = None, (np.nan, np.nan)
     for _ in range(6):
         lo, hi = ws[use][0], ws[use][-1]
-        t = np.arange(lo + SKY_KNOT, hi - SKY_KNOT, SKY_KNOT)
+        t = np.arange(lo + knot, hi - knot, knot)
         try:
             spl = LSQUnivariateSpline(ws[use], fs[use], t, k=3)
         except ValueError:
@@ -181,7 +212,10 @@ def sky_subtract(rect, ivar2d, wave2d, wrow, it, star_fwhm):
     if m.sum() < 200:
         return empty
     o = np.argsort(ws[m])
-    spl, (lo, hi) = fit_sky(ws[m][o], fs[m][o])
+    # knots no closer than SKY_KNOT_PX pixels: at 600ZD, 0.3 A is half a pixel and the spline rings
+    disp = np.nanmedian(np.abs(np.diff(wrow[sel])))
+    knot = max(SKY_KNOT, SKY_KNOT_PX * disp) if np.isfinite(disp) else SKY_KNOT
+    spl, (lo, hi) = fit_sky(ws[m][o], fs[m][o], knot)
     if spl is None:
         return empty
     inside = np.isfinite(w) & (w >= lo) & (w <= hi)
@@ -233,20 +267,24 @@ class CalibCache:
         self.dir = calib_dir
         self.cache = {}
 
-    def _find(self, kind, det):
+    def _find(self, kind, det, group):
         import glob
-        hits = sorted(glob.glob(os.path.join(self.dir, f"{kind}_*_{det}.fits*")))
+        hits = sorted(glob.glob(os.path.join(self.dir, f"{kind}_{group}_{det}.fits*")))
         if not hits:
-            raise FileNotFoundError(f"no {kind}_*_{det}.fits in {self.dir} (set --calib)")
+            raise FileNotFoundError(f"no {kind}_{group}_{det}.fits in {self.dir} (set --calib)")
         return hits[0]
 
-    def get(self, det):
-        if det not in self.cache:
+    def get(self, det, s2d):
+        # The spec2d records its calibration group (e.g. WaveCalib_A_1_MSC01.fits); a mask can have several
+        wc = (s2d.calibs or {}).get("WAVECALIB")
+        group = wc[len("WaveCalib_"):].split(f"_{det}")[0] if wc else "*"
+        key = (group, det)
+        if key not in self.cache:
             from pypeit.wavetilts import WaveTilts
             from pypeit.wavecalib import WaveCalib
-            self.cache[det] = (WaveTilts.from_file(self._find("Tilts", det), chk_version=False),
-                               WaveCalib.from_file(self._find("WaveCalib", det), chk_version=False))
-        return self.cache[det]
+            self.cache[key] = (WaveTilts.from_file(self._find("Tilts", det, group), chk_version=False),
+                               WaveCalib.from_file(self._find("WaveCalib", det, group), chk_version=False))
+        return self.cache[key]
 
 
 def slit_wave(s2d, i, flex, det, calib):
@@ -257,7 +295,7 @@ def slit_wave(s2d, i, flex, det, calib):
     thismask = slitmask == spat
     if np.any(s2d.waveimg[thismask] > 0):
         return s2d.waveimg, False
-    wtilts, wcal = calib.get(det)
+    wtilts, wcal = calib.get(det, s2d)
     tilts = s2d.tilts
     if tilts is None or not np.any(tilts[thismask] > 0):
         tflex = (0.0 if flex is None else flex) - (0.0 if wtilts.spat_flexure is None else wtilts.spat_flexure)
@@ -348,7 +386,7 @@ def main():
             flex = s2d.sci_spat_flexure
             sfw = star_fwhm_from_spec1d(fn, det, s1d_cache)
             if a.main:
-                mfn = [f for f in os.listdir(a.main) if f.startswith("spec2d_") and f".{tag}." in f]
+                mfn = [f for f in os.listdir(a.main) if f.startswith("spec2d_") and re.search(rf"DE\.\d+\.{tag}\b", f)]
                 if len(mfn) != 1:
                     raise SystemExit(f"--main: expected one spec2d for exposure {tag} in {a.main}, found {len(mfn)}")
                 mfn = os.path.join(a.main, mfn[0])
@@ -366,6 +404,10 @@ def main():
                 flags = ", ".join(slits.bitmask.flagged_bits(slits.mask[i])) or "None"
                 if rebuilt:
                     flags += " (wave rebuilt)"
+                if st.get("peak") == "outside":
+                    flags += f" (peak beyond +-{SEARCH} px)"
+                elif st.get("peak") == "none":
+                    flags += " (no peak near design)"
                 it = st["it"] if np.isfinite(st["it"]) else (exp_pos if exp_pos is not None else np.nanargmax(prof))
                 w, sub = sky_subtract(rect, ivar2d, wave2d, wrow, it, sfw)
                 k0 = int(np.round(it))
@@ -393,13 +435,13 @@ def main():
             st = d["st"]
             e = np.nan if d["exp_pos"] is None else d["exp_pos"]
             print(f"{mid:>8} {d['name']:>10} {d['exp']:>6} {d['det']:>5} {d['spat']:>5} {d['prof'].size:>4} "
-                  f"{e:6.1f} {st['off']:5.1f} {st['fwhm']:6.0f} {d['sfw']:6.1f} {st['nbr_off']:5.0f} "
+                  f"{e:6.1f} {st['off']:5.1f} {st['fwhm']:6.1f} {d['sfw']:6.1f} {st['nbr_off']:5.0f} "
                   f"{st['nbr_ratio']:5.2f} {st['tfrac']:6.2f}  {d['flags']}")
             a0 = ax[r_i, 0]
             k = np.arange(d["prof"].size)
             base = st["base"] if np.isfinite(st["base"]) else np.nanpercentile(d["prof"], 5)
             a0.plot(k, d["prof"] - base, "k-", drawstyle="steps-mid", label=f"slit {d['spat']}")
-            if np.isfinite(st["it"]):
+            if np.isfinite(st["it"]) and st.get("peak") != "none":
                 kk = np.linspace(0, k[-1], 400)
                 sig = d["sfw"] / 2.3548
                 a0.plot(kk, st["h"] * np.exp(-0.5 * ((kk - st["it"]) / sig) ** 2), "C1--",

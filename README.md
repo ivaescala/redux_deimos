@@ -252,7 +252,7 @@ the output between them.
 | `calib` | Calibrations only; writes `wavecalib_report.txt` and `wavecal_qa.csv` | Slit edges; slits failing the wavelength checks (section 6) |
 | `science` | Full reduction, reusing the calibrations | `Science/spec2d_*.fits` and `spec1d_*.fits`: one of each per exposure, each holding every slit on all four mosaics |
 | `qa` | `skysub_qa.csv` and `slit_report.txt` (slit flags per exposure) | Sky residuals vs. radius (section 6); slits flagged `BADSKYSUB` (section 7) |
-| `collate` | Adds `none` rows to `selection.csv` for slits failing `wavecal_qa.py`, merges the main and any test reduction into `Science_merged/`, and coadds 1D spectra across exposures (0.5″ matching, slits with wavelength RMS > 0.4 pix excluded) | `collate1d/`; the excluded and merged object counts printed per exposure |
+| `collate` | Adds `none` rows to `selection.csv` for slits failing `wavecal_qa.py`, merges the main and any test reduction into `Science_merged/`, and coadds 1D spectra across exposures (0.5″ matching, slits with wavelength RMS > 0.4 pix excluded; 0.6 pix for 600ZD) | `collate1d/`; the excluded and merged object counts printed per exposure |
 | `marz` | Optional. Writes a Marz input file of the coadds, for flagging galaxies and QSOs (section 9) | Save the Marz results as `marz_<mask>_MG.mz` |
 | `dmost` | Flexure, telluric, template and velocity fits, and Ca II triplet equivalent widths with dmost (section 9) | `not_in_dmost.csv`; plots in `QA/` |
 
@@ -335,7 +335,7 @@ rsync -av <user>@<cluster>:<redux path>/<semester>/<mask>/keck_deimos_A/Calibrat
 **Wavelength solutions.** `wavecal_qa.py` marks a slit bad if its lines don't run
 blue to red, its dispersion differs by more than 5% from the detector median
 (≈0.32 Å/pix for 1200G), it uses fewer than 20 arc lines, the lines span less
-than 60% (or more than 100%) of the spectrum, its RMS exceeds 0.4 pix, or PypeIt
+than 60% (or more than 100%) of the spectrum, its RMS exceeds 0.4 pix (0.6 pix for 600ZD), or PypeIt
 flagged it. Slits with no solution at all are `fail`; alignment boxes appear as
 `box`.
 
@@ -409,7 +409,10 @@ calibration files.
 For each slit it prints and plots:
 
 - `t_off`: offset of the target peak from the design position (pix)
-- `t_fwhm`: width of that peak (pix)
+- `t_fwhm`: width of that peak at half height (pix). The peak is searched
+  within ±3 pix of the design position and followed uphill up to one single-star FWHM
+  beyond; a peak outside ±3 pix is flagged `(peak beyond +-3 px)`, and a profile still
+  rising at that limit is flagged `(no peak near design)`, with `t_fwhm` left empty (nan)
 - `s_fwhm`: FWHM of a single star on the same mosaic, from the spec1d (pix)
 - `n_off`, `n/t`: offset and relative height of the brightest other source
 - `t_frac`: fraction of the slit's light within ±1 FWHM of the target
@@ -569,7 +572,7 @@ matching and forced extraction of undetected targets):
 ```
 
 Their data-quality cuts carry over: 1200G grating, science exposures > 60 s,
-≥3 flats and ≥1 arc per mask, wavelength RMS ≤ 0.4 pix.
+≥3 flats and ≥1 arc per mask, wavelength RMS ≤ 0.4 pix (0.6 pix for 600ZD).
 
 Crowded masks add one optional override, applied only in a separate
 re-reduction of rejected slits (section 7):
